@@ -16,6 +16,8 @@ ROLE=host
 CHECK_ONLY=0
 ISO_ROOT=""
 RPM_DIR=""
+DEPS_DIR=""
+DEPS_REPO_ID=ablestack-mold-deps
 PKG_MGR=""
 RPM_CMD=""
 REMOTE_DIR=""
@@ -25,6 +27,7 @@ TARGET_PACKAGES=()
 TARGET_RPMS=()
 RESOLVED_RPMS=()
 CCVM_RPMS=()
+PKG_OPTS=(-y --disablerepo='*' --nogpgcheck --best --setopt=install_weak_deps=False)
 
 usage() {
     cat <<'EOF'
@@ -37,6 +40,7 @@ usage() {
 
 RPM 경로: 스크립트 옆 rpms/ 또는 AppStream/Packages/mold/ 또는 스크립트 옆
 패키지별로 설치할 RPM을 하나씩 포함해야 합니다. 외부 저장소는 사용하지 않습니다.
+deps/ 저장소가 있으면 필요한 의존성 RPM을 자동 설치합니다.
 CCVM_HOST 환경변수로 SSH 대상을 지정할 수 있습니다 (기본값: ccvm).
 EOF
 }
@@ -142,6 +146,22 @@ detect_pkg_commands() {
     log "패키지 도구: $PKG_MGR / $RPM_CMD"
 }
 
+detect_dependency_repo() {
+    [ -d "$ISO_ROOT/deps" ] || return 0
+    DEPS_DIR="$ISO_ROOT/deps"
+    [ -s "$DEPS_DIR/repodata/repomd.xml" ] ||
+        fail 'deps/ 저장소 메타데이터가 없습니다. build-mold-iso.sh로 ISO를 다시 생성하세요.'
+    PKG_OPTS+=("--repofrompath=$DEPS_REPO_ID,file://$DEPS_DIR"
+        "--enablerepo=$DEPS_REPO_ID"
+        "--setopt=$DEPS_REPO_ID.gpgcheck=False"
+        "--setopt=$DEPS_REPO_ID.repo_gpgcheck=False"
+        "--setopt=$DEPS_REPO_ID.skip_if_unavailable=False"
+        "--setopt=$DEPS_REPO_ID.metadata_expire=0"
+        "--setopt=$DEPS_REPO_ID.module_hotfixes=True"
+        "--setopt=$DEPS_REPO_ID.excludepkgs=cloudstack-common,cloudstack-agent,cloudstack-management,cloudstack-usage,cloudstack-ui")
+    log "ISO 의존성 저장소: $DEPS_DIR (필요한 패키지만 설치)"
+}
+
 resolve_rpms() {
     local pkg path name selected count
     RESOLVED_RPMS=()
@@ -226,8 +246,17 @@ preflight_local() {
     done
     if [ "$NEEDS_UPDATE" -eq 1 ]; then
         # --replacepkgs는 검사에서 같은 버전도 허용한다. 다운그레이드는 허용하지 않는다.
-        run_with_progress 'RPM 의존성/충돌/아키텍처 검사' \
-            "$RPM_CMD" -U --test --replacepkgs -- "${TARGET_RPMS[@]}"
+        if [ -n "$DEPS_DIR" ]; then
+            # RPM 검사에서는 아직 설치하지 않은 의존성을 제외한다. --nodeps는 --test에만 사용한다.
+            run_with_progress 'RPM 버전/충돌/아키텍처 검사' \
+                "$RPM_CMD" -U --test --replacepkgs --nodeps -- "${TARGET_RPMS[@]}"
+            # 실제 설치와 같은 저장소/대상을 사용해 의존성 해석 및 RPM 트랜잭션을 검사한다.
+            run_with_progress 'ISO 의존성/전체 RPM 트랜잭션 검사' \
+                "$PKG_MGR" "${PKG_OPTS[@]}" --setopt=tsflags=test upgrade "${TARGET_RPMS[@]}"
+        else
+            run_with_progress 'RPM 의존성/충돌/아키텍처 검사' \
+                "$RPM_CMD" -U --test --replacepkgs -- "${TARGET_RPMS[@]}"
+        fi
     else
         log '모든 대상 RPM이 ISO 버전과 같습니다.'
     fi
@@ -251,8 +280,7 @@ update_local() {
     if [ "$NEEDS_UPDATE" -eq 1 ]; then
         mkdir -p "$STATE_DIR"
         touch "$pending"
-        run_with_progress 'Mold RPM 업데이트' "$PKG_MGR" -y --disablerepo='*' \
-            --nogpgcheck --setopt=install_weak_deps=False upgrade "${TARGET_RPMS[@]}"
+        run_with_progress 'Mold RPM 업데이트' "$PKG_MGR" "${PKG_OPTS[@]}" upgrade "${TARGET_RPMS[@]}"
         verify_installed
     fi
     if [ "$NEEDS_UPDATE" -eq 1 ] || [ -f "$pending" ] || ! systemctl is-active --quiet "$service"; then
@@ -267,6 +295,7 @@ update_local() {
 
 prepare_ccvm() {
     local cmd remote_dir
+    local copy_opts=("${SSH_OPTS[@]}") copy_sources=()
     for cmd in ssh scp; do command -v "$cmd" >/dev/null 2>&1 || fail "$cmd 명령이 필요합니다."; done
     resolve_rpms "${CCVM_PACKAGES[@]}"
     CCVM_RPMS=("${RESOLVED_RPMS[@]}")
@@ -275,8 +304,13 @@ prepare_ccvm() {
         'mktemp -d /var/tmp/ablestack-mold-update.XXXXXXXX')" || fail 'CCVM SSH 연결/임시 경로 생성 실패'
     [[ "$remote_dir" =~ ^/var/tmp/ablestack-mold-update\.[a-zA-Z0-9]+$ ]] || fail 'CCVM 임시 경로가 잘못되었습니다.'
     REMOTE_DIR="$remote_dir"
-    run_with_progress 'CCVM 스크립트/RPM 복사' scp "${SSH_OPTS[@]}" \
-        "$ISO_ROOT/update-mold.sh" "${CCVM_RPMS[@]}" "root@$CCVM_HOST:$REMOTE_DIR/"
+    copy_sources=("$ISO_ROOT/update-mold.sh" "${CCVM_RPMS[@]}")
+    if [ -n "$DEPS_DIR" ]; then
+        copy_opts+=(-r)
+        copy_sources+=("$DEPS_DIR")
+    fi
+    run_with_progress 'CCVM 스크립트/RPM 복사' scp "${copy_opts[@]}" \
+        "${copy_sources[@]}" "root@$CCVM_HOST:$REMOTE_DIR/"
     run_with_progress 'CCVM 사전 검사' ssh "${SSH_OPTS[@]}" "root@$CCVM_HOST" \
         "bash '$REMOTE_DIR/update-mold.sh' --role ccvm --check"
 }
@@ -291,6 +325,7 @@ main() {
     acquire_lock
     detect_iso_root
     detect_pkg_commands
+    detect_dependency_repo
     command -v systemctl >/dev/null 2>&1 || fail 'systemctl 명령을 찾을 수 없습니다.'
     if [ "$ROLE" = host ]; then
         TARGET_PACKAGES=("${HOST_PACKAGES[@]}")

@@ -8,7 +8,11 @@ OUTPUT=ablestack-mold-update.iso
 WORK_DIR=""
 RPM_CMD=""
 ISO_TOOL=""
+REPO_TOOL=""
+INPUT_RPMS=()
+INPUT_NAMES=()
 SELECTED_RPMS=()
+DEPENDENCY_RPMS=()
 
 usage() {
     cat <<'EOF'
@@ -17,9 +21,11 @@ usage() {
 필요한 RPM: cloudstack-common, cloudstack-agent, cloudstack-management,
            cloudstack-usage, cloudstack-ui (각 패키지별 한 버전/아키텍처)
 필요한 도구: rpm 또는 aspkg, xorriso 또는 genisoimage 또는 mkisofs
+추가 의존성 RPM이 있으면 createrepo_c 또는 createrepo도 필요합니다.
 
 마운트용 데이터 ISO를 생성합니다. root 권한은 필요하지 않습니다.
 기존 출력 파일은 덮어쓰지 않습니다. RPM은 하위 디렉터리도 검색합니다.
+필수 5종 이외의 RPM은 ISO의 deps/ 저장소에 포함합니다.
 EOF
 }
 
@@ -65,20 +71,38 @@ for cmd in xorriso genisoimage mkisofs; do
 done
 [ -n "$ISO_TOOL" ] || fail 'xorriso/genisoimage/mkisofs 중 하나가 필요합니다.'
 
+# 헤더를 한 번씩 조회한다. 필수 5종은 직접 업데이트하고 나머지는 의존성 후보다.
+while IFS= read -r -d '' rpm_path; do
+    name="$("$RPM_CMD" -qp --qf '%{NAME}' -- "$rpm_path")" || fail "RPM 읽기 실패: $rpm_path"
+    [ -n "$name" ] || fail "RPM 패키지 이름이 비어 있습니다: $rpm_path"
+    INPUT_RPMS+=("$rpm_path")
+    INPUT_NAMES+=("$name")
+    case "$name" in
+        cloudstack-common|cloudstack-agent|cloudstack-management|cloudstack-usage|cloudstack-ui) ;;
+        *) DEPENDENCY_RPMS+=("$rpm_path") ;;
+    esac
+done < <(find "$RPM_SOURCE" -type f -name '*.rpm' -print0)
+
 for pkg in "${PACKAGES[@]}"; do
     selected=""
     count=0
-    while IFS= read -r -d '' rpm_path; do
-        name="$("$RPM_CMD" -qp --qf '%{NAME}' -- "$rpm_path")" || fail "RPM 읽기 실패: $rpm_path"
-        [ "$name" = "$pkg" ] || continue
-        selected="$rpm_path"
+    for ((i=0; i<${#INPUT_RPMS[@]}; i++)); do
+        [ "${INPUT_NAMES[i]}" = "$pkg" ] || continue
+        selected="${INPUT_RPMS[i]}"
         count=$((count + 1))
-    done < <(find "$RPM_SOURCE" -type f -name '*.rpm' -print0)
+    done
     [ "$count" -gt 0 ] || fail "$pkg RPM이 없습니다."
     [ "$count" -eq 1 ] || fail "$pkg RPM이 $count 개입니다. 패키지별 하나씩만 준비하세요."
     SELECTED_RPMS+=("$selected")
     echo "포함: $selected"
 done
+
+if [ "${#DEPENDENCY_RPMS[@]}" -gt 0 ]; then
+    for cmd in createrepo_c createrepo; do
+        if command -v "$cmd" >/dev/null 2>&1; then REPO_TOOL="$cmd"; break; fi
+    done
+    [ -n "$REPO_TOOL" ] || fail '의존성 RPM을 포함하려면 createrepo_c/createrepo가 필요합니다.'
+fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mold-iso.XXXXXXXX")"
 trap cleanup EXIT
@@ -94,6 +118,18 @@ for rpm_path in "${SELECTED_RPMS[@]}"; do
     [ ! -e "$target" ] || fail "서로 다른 RPM의 파일명이 같습니다: $rpm_path"
     cp "$rpm_path" "$target"
 done
+
+if [ "${#DEPENDENCY_RPMS[@]}" -gt 0 ]; then
+    mkdir -p "$ISO_ROOT/deps"
+    for rpm_path in "${DEPENDENCY_RPMS[@]}"; do
+        target="$ISO_ROOT/deps/$(basename "$rpm_path")"
+        [ ! -e "$target" ] || fail "서로 다른 의존성 RPM의 파일명이 같습니다: $rpm_path"
+        cp "$rpm_path" "$target"
+        echo "의존성 후보 포함: $rpm_path"
+    done
+    "$REPO_TOOL" "$ISO_ROOT/deps"
+    [ -s "$ISO_ROOT/deps/repodata/repomd.xml" ] || fail '의존성 저장소 메타데이터 생성 실패'
+fi
 
 if [ "$ISO_TOOL" = xorriso ]; then
     xorriso -as mkisofs -r -J -V ABLESTACK_MOLD -o "$WORK_DIR/image.iso" "$ISO_ROOT"

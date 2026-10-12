@@ -5,6 +5,8 @@
 실행 중이면 SSH로 CCVM의 `cloudstack-common`, `cloudstack-management`,
 `cloudstack-usage`, `cloudstack-ui`를 먼저 업데이트합니다.
 CCVM에는 `cloudstack-agent`를 설치하거나 업데이트하지 않습니다.
+새 의존성 RPM도 같은 ISO에 포함할 수 있습니다. 각 머신은 ISO의 로컬 저장소에서
+자신에게 필요한 의존성을 선택해 Mold RPM과 같은 트랜잭션으로 설치합니다.
 
 CCVM은 PCS의 `cloudcenter_res` 리소스로 전체 호스트 중 한 곳에서 실행되는 구성을
 기준으로 합니다. PCS의 실행 노드가 현재 호스트인지 확인하고, 로컬 libvirt에서도
@@ -25,7 +27,7 @@ ablestack-mold-update-iso/
 ├── update-mold.sh
 ├── README.md
 ├── .gitignore
-├── rpms/                      # 빌드할 RPM 5개
+├── rpms/                      # Mold RPM 5개 + 필요한 의존성 RPM
 ├── dist/                      # 생성된 ISO
 └── tests/
     └── test_mold_iso.py        # 로컬 검증용, Git 제외
@@ -40,10 +42,20 @@ RPM과 ISO 파일, 로컬 검증용 `tests/`는 `.gitignore`로 제외합니다.
 
 RPM 헤더를 조회할 수 있는 `rpm` 또는 `aspkg`와 ISO 생성 도구
 `xorriso`, `genisoimage`, `mkisofs` 중 하나가 필요합니다. 빌드는 일반 사용자로 가능합니다.
+추가 의존성 RPM을 포함할 때는 빌드 머신에 `createrepo_c` 또는 `createrepo`도
+필요합니다. 업데이트 대상 호스트와 CCVM에는 이 도구가 필요하지 않습니다.
 
 다섯 패키지의 배포할 RPM을 저장소의 `rpms/`에 준비합니다. 각 패키지는 대상 OS와
 아키텍처에 맞는 RPM 하나씩만 넣습니다. 공통 RPM은 한 개만 있으면 됩니다.
 파일명 대신 RPM 헤더의 패키지 이름을 확인하며, 누락이나 중복이 있으면 생성을 중단합니다.
+
+필요한 의존성 RPM도 같은 `rpms/`에 넣습니다. `rpms/dependencies/`처럼 하위 폴더로
+정리해도 됩니다. 의존성 RPM이 요구하는 추가 의존성까지 준비하고, 대상 호스트와
+CCVM의 OS 버전 및 아키텍처에 맞는 파일을 사용하세요. 호스트와 CCVM에 필요한
+RPM을 모두 포함하면 됩니다. 빌더는 필수 Mold 5종 이외의 모든 RPM을 ISO의
+`deps/`로 복사하고 저장소 메타데이터를 생성합니다. 빌더가 외부에서 RPM을
+다운로드하지는 않습니다. 필요한 의존성이 모두 준비되었는지는 실제 대상 머신의
+`--check`로 확인합니다.
 
 ```bash
 bash ./build-mold-iso.sh \
@@ -61,24 +73,37 @@ bash ./build-mold-iso.sh \
 /
 ├── update-mold.sh
 ├── README.md
-└── rpms/
-    ├── cloudstack-common-<버전>.rpm
-    ├── cloudstack-agent-<버전>.rpm
-    ├── cloudstack-management-<버전>.rpm
-    ├── cloudstack-usage-<버전>.rpm
-    └── cloudstack-ui-<버전>.rpm
+├── rpms/
+│   ├── cloudstack-common-<버전>.rpm
+│   ├── cloudstack-agent-<버전>.rpm
+│   ├── cloudstack-management-<버전>.rpm
+│   ├── cloudstack-usage-<버전>.rpm
+│   └── cloudstack-ui-<버전>.rpm
+└── deps/                      # 추가 RPM이 있을 때만 생성
+    ├── <의존성 패키지>.rpm
+    └── repodata/
+        └── repomd.xml         # 다른 저장소 메타데이터도 함께 생성
 ```
 
-`ks/ablestack-ks.cfg`, `config/dnf-3`, `config/rpm`, 저장소 메타데이터는 필요하지 않습니다.
+`ks/ablestack-ks.cfg`, `config/dnf-3`, `config/rpm`, BaseOS/AppStream 저장소는 필요하지
+않습니다. 의존성 저장소의 `deps/repodata/`는 빌더가 생성하므로 직접 만들 필요가
+없습니다. 추가 RPM이 없으면 기존 5개 RPM만 포함한 ISO를 생성합니다.
 기존 ISO의 `AppStream/Packages/mold/` 배치도 지원합니다.
 
 ## 각 호스트에서 실행
 
-각 호스트에 대상 패키지와 의존 패키지가 이미 설치되어 있어야 합니다.
-외부 저장소를 모두 끄고 ISO의 지정 RPM만 업데이트하므로, 새 의존 패키지가 필요한
-버전은 사전에 의존성을 준비해야 합니다. 누락된 의존성, 충돌, 잘못된 아키텍처,
-다운그레이드는 RPM 사전 검사에서 중단됩니다. 별도 의존성 RPM을 ISO에 추가해도
-자동 설치하지 않습니다.
+각 머신에 해당 역할의 Mold 패키지는 이미 설치되어 있어야 합니다. 의존성은
+이미 설치되어 있거나 ISO의 `deps/` 저장소에서 제공되어야 합니다.
+외부 저장소를 모두 끄고 ISO의 의존성 저장소만 활성화합니다. 이 저장소에 있는
+RPM을 일괄 설치하지 않고, 각 역할의 Mold 패키지가 요구하는 것만 설치하거나
+필요한 버전으로 업데이트합니다. 필수 Mold 5종은 의존성 저장소 후보에서 제외하므로
+호스트에 관리 서버 패키지를 설치하거나 CCVM에 agent를 설치하지 않습니다.
+
+설치 전에 RPM의 버전/충돌/아키텍처를 확인하고, 의존성 저장소가 있으면 DNF의
+테스트 트랜잭션으로 의존성 해석과 전체 RPM 트랜잭션도 검사합니다. 누락된 의존성,
+충돌, 잘못된 아키텍처, Mold RPM 다운그레이드는 설치 전에 중단됩니다.
+`--check`에서도 의존성 RPM을 실제로 설치하거나 서비스를 재시작하지 않습니다.
+`deps/`가 없는 기존 ISO는 기존 방식으로 설치된 의존성을 검사합니다.
 
 CCVM 실행 호스트에서는 `ssh`와 `scp`, CCVM에 비밀번호 없이 접속할 수 있는 root SSH
 키가 필요합니다. 기본 SSH 대상 이름은 `ccvm`이며 실제 실행 중인 CCVM을 가리켜야
@@ -139,7 +164,8 @@ RPM 버전이 이미 일치하고 서비스도 정상인 경우 설치와 재시
 설치 후 중단되어 재시작이 남아 있으면 재실행 시 재시도합니다.
 
 CCVM의 실행별 임시 폴더는 작업 종료 시 정리합니다. `--check`도 로그, 잠금,
-원격 임시 파일을 사용하지만 RPM을 설치하거나 서비스를 재시작하지 않습니다.
+원격 임시 파일과 패키지 도구의 캐시를 사용하지만 RPM을 설치하거나 서비스를
+재시작하지 않습니다. CCVM에는 대상 Mold RPM 4개와 의존성 저장소 전체를 복사합니다.
 실패 시 자동 롤백은 하지 않으며, 먼저 완료된 CCVM 업데이트 등은 유지됩니다.
 실패 원인을 해결하고 동일 ISO로 재실행할 수 있습니다.
 
@@ -157,4 +183,6 @@ python3 -B -m unittest discover -s tests -v
 ```
 
 명령 옵션 참고: [DNF 공식 문서](https://dnf.readthedocs.io/en/stable/command_ref.html),
+[DNF 테스트 트랜잭션](https://dnf.readthedocs.io/en/stable/conf_ref.html#tsflags),
+[createrepo_c](https://github.com/rpm-software-management/createrepo_c),
 [xorriso 공식 문서](https://www.gnu.org/software/xorriso/man_1_xorriso.html).
