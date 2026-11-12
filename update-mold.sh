@@ -14,6 +14,7 @@ RPM_QUERY_FORMAT='%{NAME}|%{EPOCHNUM}:%{VERSION}-%{RELEASE}|%{ARCH}\n'
 STATE_DIR=/var/lib/ablestack-mold-update
 ROLE=host
 CHECK_ONLY=0
+SCRIPT_DIR=""
 ISO_ROOT=""
 RPM_DIR=""
 DEPS_DIR=""
@@ -31,14 +32,14 @@ PKG_OPTS=(-y --disablerepo='*' --nogpgcheck --best --setopt=install_weak_deps=Fa
 
 usage() {
     cat <<'EOF'
-사용법: bash /마운트경로/update-mold.sh [--check] [--role host|ccvm]
+사용법: bash /마운트경로/update/update-mold.sh [--check] [--role host|ccvm]
 
   기본 동작       현재 호스트와 이 호스트에서 실행 중인 ccvm 업데이트
   --check         RPM/설치 상태/의존성 확인만 수행 (설치 및 서비스 재시작 없음)
   --role ccvm     현재 머신의 CCVM 패키지만 처리 (원격 실행 시 내부 사용)
   -h, --help      도움말
 
-RPM 경로: 스크립트 옆 rpms/ 또는 AppStream/Packages/mold/ 또는 스크립트 옆
+RPM 경로: ISO 루트의 rpms/ 또는 AppStream/Packages/mold/ 또는 ISO 루트
 패키지별로 설치할 RPM을 하나씩 포함해야 합니다. 외부 저장소는 사용하지 않습니다.
 deps/ 저장소가 있으면 필요한 의존성 RPM을 자동 설치합니다.
 CCVM_HOST 환경변수로 SSH 대상을 지정할 수 있습니다 (기본값: ccvm).
@@ -118,7 +119,15 @@ run_with_progress() {
 }
 
 detect_iso_root() {
-    ISO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    ISO_ROOT="$SCRIPT_DIR"
+    # ISO의 update/ 배치와 CCVM의 스크립트/RPM 임시 폴더 배치를 구분한다.
+    if [ "${SCRIPT_DIR##*/}" = "update" ] &&
+       [ ! -d "$SCRIPT_DIR/rpms" ] &&
+       [ ! -d "$SCRIPT_DIR/AppStream/Packages/mold" ] &&
+       ! compgen -G "$SCRIPT_DIR/*.rpm" >/dev/null; then
+        ISO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+    fi
     if [ -d "$ISO_ROOT/rpms" ]; then
         RPM_DIR="$ISO_ROOT/rpms"
     elif [ -d "$ISO_ROOT/AppStream/Packages/mold" ]; then
@@ -304,7 +313,7 @@ prepare_ccvm() {
         'mktemp -d /var/tmp/ablestack-mold-update.XXXXXXXX')" || fail 'CCVM SSH 연결/임시 경로 생성 실패'
     [[ "$remote_dir" =~ ^/var/tmp/ablestack-mold-update\.[a-zA-Z0-9]+$ ]] || fail 'CCVM 임시 경로가 잘못되었습니다.'
     REMOTE_DIR="$remote_dir"
-    copy_sources=("$ISO_ROOT/update-mold.sh" "${CCVM_RPMS[@]}")
+    copy_sources=("$SCRIPT_DIR/update-mold.sh" "${CCVM_RPMS[@]}")
     if [ -n "$DEPS_DIR" ]; then
         copy_opts+=(-r)
         copy_sources+=("$DEPS_DIR")
