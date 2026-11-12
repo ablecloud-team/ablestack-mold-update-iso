@@ -1,6 +1,6 @@
 # Mold RPM 업데이트 ISO
 
-이 ISO를 각 호스트에 마운트하고 `update-mold.sh`를 실행합니다. 호스트는 자신의
+이 ISO를 각 호스트에 마운트하고 `update/update-mold.sh`를 실행합니다. 호스트는 자신의
 `cloudstack-common`, `cloudstack-agent`를 업데이트합니다. 해당 호스트에서 `ccvm`이
 실행 중이면 SSH로 CCVM의 `cloudstack-common`, `cloudstack-management`,
 `cloudstack-usage`, `cloudstack-ui`를 먼저 업데이트합니다.
@@ -71,7 +71,8 @@ bash ./build-mold-iso.sh \
 
 ```text
 /
-├── update-mold.sh
+├── update/
+│   └── update-mold.sh
 ├── README.md
 ├── rpms/
 │   ├── cloudstack-common-<버전>.rpm
@@ -117,10 +118,10 @@ mkdir -p /mnt/mold-update
 mount -o loop,ro /data/ablestack-mold-update.iso /mnt/mold-update
 
 # 선택: RPM 설치와 서비스 재시작 없이 사전 검사
-bash /mnt/mold-update/update-mold.sh --check
+bash /mnt/mold-update/update/update-mold.sh --check
 
 # 업데이트
-bash /mnt/mold-update/update-mold.sh
+bash /mnt/mold-update/update/update-mold.sh
 
 umount /mnt/mold-update
 ```
@@ -132,12 +133,13 @@ mount -o ro /dev/sr0 /mnt/mold-update
 ```
 
 ISO가 읽기 전용이거나 `noexec`로 마운트되어 있어도 `bash`로 실행할 수 있습니다.
-현재 작업 디렉터리와 무관하게 스크립트 위치에서 RPM을 찾습니다.
+현재 작업 디렉터리와 무관하게 `update/`의 상위 디렉터리인 ISO 루트에서 RPM을 찾습니다.
 
 ## Cockpit 화면에서 실행
 
 새로 생성한 ISO를 마운트한 뒤 업데이트 창에서 **Mold 업데이트**를 선택하고
-마운트 경로를 입력합니다. **확인**을 누르면 `update-mold.sh`와 필수 RPM 5종의
+ISO 루트의 마운트 경로를 입력합니다 (`update/` 경로가 아닙니다).
+**확인**을 누르면 `update/update-mold.sh`와 필수 RPM 5종의
 헤더를 검사합니다. RPM 누락·중복이나 헤더 조회 실패는 이 단계에서 표시하며,
 `ks/config`, BaseOS, AppStream 저장소는 요구하지 않습니다.
 
@@ -146,8 +148,9 @@ Mold 선택 시 표의 구분은 **Mold**로 표시합니다. 현재 버전은 �
 `aspkg`를 우선 사용하고 없으면 `rpm`으로 조회하며, 패키지명과 아키텍처를 제외한
 `VERSION-RELEASE`만 표시합니다 (예: `4.23.0.0-Mold.Europa.202609111701.1`). **실행**을 누르면
 다시 검증한 뒤 ISO 내용을 `/opt/ABLESTACK_UPDATE`에 복사하고 그 안의
-`update-mold.sh`를 실행합니다. CCVM 대상 판단과 의존성 검사는 해당 스크립트가 담당합니다.
-**전체 업데이트**는 기존 설치 ISO와 KS 버전 검증, `update-all.sh` 실행 방식을 유지합니다.
+`update/update-mold.sh`를 실행합니다. CCVM 대상 판단과 의존성 검사는 해당 스크립트가 담당합니다.
+**전체 업데이트**도 ISO 루트의 `ks/ablestack-ks.cfg`에서 버전을 확인하고,
+복사한 `update/update-all.sh`를 실행합니다.
 
 ## 여러 호스트의 처리 순서
 

@@ -109,10 +109,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 ISO_ROOT="$WORK_DIR/iso-root"
-mkdir -p "$ISO_ROOT/rpms"
-cp "$SCRIPT_DIR/update-mold.sh" "$ISO_ROOT/"
+mkdir -p "$ISO_ROOT/update" "$ISO_ROOT/rpms"
+cp "$SCRIPT_DIR/update-mold.sh" "$ISO_ROOT/update/"
 cp "$SCRIPT_DIR/README.md" "$ISO_ROOT/"
-chmod 755 "$ISO_ROOT/update-mold.sh"
+chmod 755 "$ISO_ROOT/update/update-mold.sh"
 for rpm_path in "${SELECTED_RPMS[@]}"; do
     target="$ISO_ROOT/rpms/$(basename "$rpm_path")"
     [ ! -e "$target" ] || fail "서로 다른 RPM의 파일명이 같습니다: $rpm_path"
